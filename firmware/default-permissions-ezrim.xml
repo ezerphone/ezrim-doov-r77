@@ -8,5 +8,8 @@
         <!-- עזר (העוזר הקולי): ניגון שירים מהמכשיר ובלוטוס -->
         <permission name="android.permission.READ_MEDIA_AUDIO" fixed="false"/>
         <permission name="android.permission.BLUETOOTH_CONNECT" fixed="false"/>
+        <permission name="android.permission.READ_CONTACTS" fixed="false"/>
+        <permission name="android.permission.CALL_PHONE" fixed="false"/>
+        <permission name="android.permission.READ_CALL_LOG" fixed="false"/>
     </exception>
 </exceptions>

@@ -256,13 +256,12 @@ class CameraButtonService : AccessibilityService() {
 
     // צלצול ← רטט ← שקט ← צלצול
     private fun cycleRinger() {
-        val am = getSystemService(AudioManager::class.java) ?: return
-        val (next, name) = when (am.ringerMode) {
+        val (next, name) = when (app.luma.torch.assistant.Assistant.ringerNow(this)) {
             AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE to "רטט"
             AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_SILENT to "שקט"
             else -> AudioManager.RINGER_MODE_NORMAL to "צלצול"
         }
-        toast(if (app.luma.torch.assistant.Assistant.setRinger(this, next)) name else "אין הרשאה לשנות את מצב הצלצול")
+        toast(if (app.luma.torch.assistant.Assistant.setRinger(this, next)) name else "לא ניתן לשנות את מצב הצלצול")
     }
 
     // הפעלה/עצירה של המדיה שמתנגנת כרגע (מוזיקה, שיעור, פודקאסט), כמו מקש play באוזניות

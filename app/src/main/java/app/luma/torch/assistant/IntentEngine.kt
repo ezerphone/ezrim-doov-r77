@@ -41,6 +41,7 @@ class IntentEngine {
                 base.copy(duration = d, time = time, text = t.remainder(REMINDER_WORDS).ifBlank { null })
             }
             "call" -> base.copy(text = t.contactName())
+            "contact_number" -> base.copy(text = t.numberOf())
             "play_song" -> { val (q, a) = t.song(); base.copy(text = q, artist = a) }
             "open_app" -> base.copy(text = t.remainder(APP_WORDS).ifBlank { null }?.let { stripL(it) })
             "zmanim" -> base.copy(zman = t.zman(), dayOffset = t.dayOrWeekday(now))
@@ -97,6 +98,8 @@ class IntentEngine {
         val CALL_WORDS = set("תתקשר", "תתקשרי", "תתקשרו", "התקשר", "התקשרי", "להתקשר", "תחייג", "תחייגי", "תחייגו", "חייג", "חייגי", "לחייג", "תצלצל",
             "תצלצלי", "צלצל", "צלצלי", "לצלצל", "תטלפן", "טלפן", "טלפני", "לטלפן", "תוציא", "שיחה", "שיחת", "טלפון", "תרים", "תעשה", "תפתח", "תחבר",
             "אותי", "לדבר", "עם", "אל", "תשיג", "תביא", "תשים", "תעלה", "על", "הקו", "בטלפון", "בנייד", "לנייד", "לפלאפון", "לטלפון")
+        val NUMBER_WORDS = set("מה", "מהו", "מספר", "המספר", "מספרו", "טלפון", "הטלפון", "הנייד", "נייד", "הפלאפון", "פלאפון", "של", "את", "תגיד", "תגידי",
+            "תן", "תני", "תביא", "תביאי", "לי", "יש", "תמצא", "תחפש", "אני", "צריך", "רוצה", "לדעת", "בבקשה", "הזה")
         val SONG_WORDS = set("תנגן", "תנגני", "נגן", "תשמיע", "השמע", "תשים", "שים", "תפעיל", "הפעל", "לשמוע", "לנגן", "תוכל", "את", "השיר", "שיר",
             "משהו", "שירים", "השירים", "מוזיקה", "קצת", "האלבום", "המוזיקה", "ניגון", "ניגונים", "הניגון", "לי")
 
@@ -485,6 +488,13 @@ class IntentEngine {
         }
 
         // שם איש הקשר: מה שנשאר אחרי מילות החיוג, בלי ה-ל בהתחלה ("לאמא" → "אמא")
+        // "מה המספר של אבא" / "תגיד לי את הטלפון של משה" → "אבא" / "משה"
+        fun numberOf(): String? {
+            val r = remainder(NUMBER_WORDS).split(' ').filter { it.isNotEmpty() }.toMutableList()
+            if (r.isEmpty()) return null
+            return r.joinToString(" ").ifBlank { null }
+        }
+
         fun contactName(): String? {
             val r = remainder(CALL_WORDS).split(' ').filter { it.isNotEmpty() }.toMutableList()
             if (r.isEmpty()) return null

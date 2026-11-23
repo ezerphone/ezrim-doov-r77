@@ -66,7 +66,10 @@ object Perms {
         Manifest.permission.RECORD_AUDIO to "מיקרופון",
         (if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE) to "קבצי מוזיקה",
         if (Build.VERSION.SDK_INT >= 33) Manifest.permission.POST_NOTIFICATIONS to "התראות" else null,
-        if (Build.VERSION.SDK_INT >= 31) Manifest.permission.BLUETOOTH_CONNECT to "בלוטוס" else null
+        if (Build.VERSION.SDK_INT >= 31) Manifest.permission.BLUETOOTH_CONNECT to "בלוטוס" else null,
+        Manifest.permission.READ_CONTACTS to "אנשי קשר",
+        Manifest.permission.CALL_PHONE to "שיחות טלפון",
+        Manifest.permission.READ_CALL_LOG to "יומן שיחות"
     )
 
     private fun secureHas(c: Context, key: String, cn: ComponentName): Boolean {

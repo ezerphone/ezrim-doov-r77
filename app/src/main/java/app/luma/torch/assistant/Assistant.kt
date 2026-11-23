@@ -91,9 +91,10 @@ object Assistant {
 
     private val INTERNAL = mapOf("reminder_add" to "reminder", "timer_set" to "timer", "alarm_set" to "alarm", "zmanim_all" to "zmanim",
         "battery_query" to "battery", "dnd_on" to "ringer_silent", "vibrate_mode" to "ringer_vibrate", "dnd_off" to "ringer_normal",
-        "music_pause" to "media_pause", "music_resume" to "media_play", "music_next" to "media_next", "music_prev" to "media_prev")
+        "music_pause" to "media_pause", "music_resume" to "media_play", "music_next" to "media_next", "music_prev" to "media_prev",
+        "call_contact" to "call")
     // עזר לא מכיר את אלה בכלל — עונה "לא הבנתי", כאילו ביקשו משהו שלא קיים
-    private val GONE = setOf("call_contact", "call_back", "recent_calls", "contact_number", "message_send", "driving_on", "driving_off",
+    private val GONE = setOf("message_send", "driving_on", "driving_off",
         "wifi_on", "wifi_off", "transit_route", "bus_line", "name_ask_user", "name_set_user", "name_set_assistant", "knowledge_query",
         "voice_record", "bracha_query", "saying", "daf_yomi", "tehillim", "fun_fact", "suggest_food", "breathing", "shabbat_on", "shabbat_off",
         "parking_save", "parking_find", "joke")
@@ -206,6 +207,10 @@ object Assistant {
             "camera" -> start(c, Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA), "פותח את המצלמה")
             "open_app" -> Reply("איזו אפליקציה לפתוח?")
             "navigate" -> navigate(c, u.text)
+            "call" -> Phone.call(c, u.text)
+            "call_back" -> Phone.callBack(c)
+            "recent_calls" -> Phone.recent(c)
+            "contact_number" -> Phone.number(c, u.text)
             // מסך
             "nav_home" -> global(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME, "חוזר למסך הבית")
             "nav_back" -> global(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK, "חוזר אחורה")
@@ -531,16 +536,20 @@ object Assistant {
     private fun ringer(c: Context, mode: Int, ok: String): Reply =
         if (setRinger(c, mode)) Reply(ok) else Reply(Say.NO_PERMISSION)
 
-    // מעבר בין צלצול / רטט / שקט (גם ממקשי הקיצור). false = אין הרשאה
+    // מעבר בין צלצול / רטט / שקט (גם ממקשי הקיצור), כמו הפעמון בלוח עוצמת הקול של המערכת:
+    // רק הצלצול מושתק, בלי "נא לא להפריע". הפונקציה מוסתרת ודורשת STATUS_BAR_SERVICE (ניתנת בזכות חתימת המערכת).
+    // false = נכשל
     fun setRinger(c: Context, mode: Int): Boolean {
-        val am = c.getSystemService(AudioManager::class.java)
-        if (mode != AudioManager.RINGER_MODE_NORMAL || am.ringerMode == AudioManager.RINGER_MODE_SILENT) grantDnd(c)
-        return try { am.ringerMode = mode; true } catch (_: SecurityException) { false }
+        val am = c.getSystemService(AudioManager::class.java) ?: return false
+        return try {
+            AudioManager::class.java.getMethod("setRingerModeInternal", Int::class.javaPrimitiveType).invoke(am, mode); true
+        } catch (t: Throwable) { android.util.Log.w("Ezrim", "setRingerModeInternal failed", t); false }
     }
 
-    private fun grantDnd(c: Context) {
-        if (c.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted) return
-        appendSecure(c, "enabled_notification_policy_access_packages", c.packageName)
+    // מצב הצלצול כמו שלוח עוצמת הקול מציג אותו
+    fun ringerNow(c: Context): Int {
+        val am = c.getSystemService(AudioManager::class.java) ?: return AudioManager.RINGER_MODE_NORMAL
+        return try { AudioManager::class.java.getMethod("getRingerModeInternal").invoke(am) as Int } catch (_: Throwable) { am.ringerMode }
     }
 
     fun appendSecure(c: Context, key: String, value: String) {

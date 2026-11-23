@@ -22,6 +22,12 @@
     <uses-permission android:name="android.permission.MANAGE_APP_OPS_MODES"/>
     <!-- מקשים: לחיצה קצרה שנעצרה (עד שהתברר שאינה ארוכה) נשלחת שוב לאפליקציה. ניתנת בזכות חתימת המערכת; רשומה גם ב-privapp-permissions-ezrim.xml ליתר ביטחון -->
     <uses-permission android:name="android.permission.INJECT_EVENTS"/>
+    <!-- שקט / רטט / צלצול כמו בלוח עוצמת הקול (בלי "נא לא להפריע"). ניתנת בזכות חתימת המערכת; רשומה גם ב-privapp-permissions-ezrim.xml ליתר ביטחון -->
+    <uses-permission android:name="android.permission.STATUS_BAR_SERVICE"/>
+    <!-- עזר: חיוג לאיש קשר, חזרה לשיחה האחרונה, שיחות אחרונות ומספר של איש קשר (הרשאות רגילות שהמשתמש מאשר) -->
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <uses-permission android:name="android.permission.READ_CALL_LOG"/>
     <!-- העוזר הקולי: הרשאות רגילות/ריצה (לא privileged — לא דורשות שינוי בקובץ ההרשאות) -->
     <!-- הגדרת עזרים כעוזר המערכת: signature|installer (בלי privileged) — ניתנת אוטומטית בזכות חתימת המערכת, בלי קובץ ההרשאות -->
     <uses-permission android:name="android.permission.MANAGE_ROLE_HOLDERS"/>

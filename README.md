@@ -52,3 +52,8 @@ adb shell "dumpsys package com.android.adds | grep -E 'INJECT_EVENTS|WRITE_SECUR
 adb shell ls -l /system/priv-app/Ezrim/lib/arm64 /system/etc/ezrim/hebrew-asr
 ```
 בשורה הראשונה צריך להופיע `/system/priv-app/Ezrim/ezrim.apk`, ובשנייה `granted=true` לשתי ההרשאות.
+
+## היסטוריית גרסאות
+- 1.0.0 — גרסה ראשונה.
+- 1.0.1 — שקט / רטט / צלצול (קיצור במקשים ופקודות עזר) כמו בלוח עוצמת הקול, בלי "נא לא להפריע". נוספה ההרשאה STATUS_BAR_SERVICE לקובץ ההרשאות.
+  פקודות טלפון לעזר: חיוג לאיש קשר, חזרה לשיחה האחרונה, שיחות אחרונות, מספר של איש קשר (רק אחרי פתיחת נעילה).
