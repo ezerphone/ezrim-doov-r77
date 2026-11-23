@@ -82,9 +82,31 @@ class CameraButtonService : AccessibilityService() {
 
     private fun digitOf(code: Int) = if (code in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9) code - KeyEvent.KEYCODE_0 else -1
 
+    // הקלדת *#8682# במקשים (בחייגן או בכל מקום אחר) מפעילה את המגע — מיד בהקשה על ה-# האחרון, בלי ללחוץ חיוג.
+    // אין הגבלת זמן בין ההקשות; מקש מחיקה / חזרה מוחק את ההקשה האחרונה, כמו בחייגן
+    private val typed = StringBuilder()
+    private fun watchCode(e: KeyEvent) {
+        if (e.action != KeyEvent.ACTION_DOWN || e.repeatCount > 0) return
+        val ch = when (e.keyCode) {
+            in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> '0' + (e.keyCode - KeyEvent.KEYCODE_0)
+            KeyEvent.KEYCODE_STAR -> '*'
+            KeyEvent.KEYCODE_POUND -> '#'
+            KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_BACK -> { if (typed.isNotEmpty()) typed.setLength(typed.length - 1); return }
+            else -> return
+        }
+        typed.append(ch)
+        val code = "*#${Touch.CODE}#"
+        if (typed.length > code.length) typed.delete(0, typed.length - code.length)
+        if (typed.toString() == code) {
+            typed.setLength(0)
+            toast(if (Touch.set(this, false)) "המגע הופעל" else "לא ניתן להפעיל את המגע")
+        }
+    }
+
     override fun onKeyEvent(e: KeyEvent): Boolean {
         if (!physical(e)) return false
         val code = e.keyCode
+        watchCode(e)
         if (e.action == KeyEvent.ACTION_DOWN) {
             if (e.repeatCount > 0) return code == pendCode || code in swallowUp
             // לחיצה על מקש אחר בזמן שמקש קודם עוד מוחזק: הקודם נשלח מיד כלחיצה רגילה

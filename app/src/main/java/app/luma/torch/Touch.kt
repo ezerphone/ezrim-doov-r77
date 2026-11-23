@@ -10,7 +10,7 @@ import android.widget.Toast
 
 // כיבוי והפעלה של מסך המגע (R77: טלפון מקשים — המקשים ממשיכים לעבוד).
 // משתמש בפונקציה המוסתרת InputManager.disableInputDevice (הרשאת DISABLE_INPUT_DEVICE, בזכות חתימת המערכת).
-// המצב נשמר ב-Settings.Global ומוחזר אחרי הפעלה מחדש. גיבוי: הקוד *#*#8682#*#* בחייגן מפעיל את המגע.
+// המצב נשמר ב-Settings.Global ומוחזר אחרי הפעלה מחדש. גיבוי: הקלדת *#8682# במקשים מפעילה את המגע (CameraButtonService.watchCode).
 object Touch {
     const val CODE = "8682"
     private const val KEY = "ezrim_touch_off"
