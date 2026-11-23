@@ -45,13 +45,21 @@ class CameraButtonService : AccessibilityService() {
         Torch.init(this)
         instance = this
         PushToTalk.indicator = { on -> h.post { if (on) edgeMic.show() else edgeMic.hide() } }
+        // "היי עזר": אם השירות לא הצליח לעלות ברקע (אחרי הפעלה מחדש) — מנסים שוב עכשיו, וכשהמסך נדלק / הנעילה נפתחת
+        try { app.luma.torch.assistant.Hotword.retry(this) } catch (_: Exception) {}
+        try { registerReceiver(wake, android.content.IntentFilter().apply { addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_USER_PRESENT) }) } catch (_: Exception) {}
         // כדי לדעת אם המקלדת מוצגת כרגע (חלון המקלדת ברשימת החלונות)
         try { serviceInfo = serviceInfo.apply { flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS } } catch (_: Exception) {}
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
     override fun onInterrupt() {}
+    private val wake = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: Intent) { try { app.luma.torch.assistant.Hotword.retry(c) } catch (_: Exception) {} }
+    }
+
     override fun onDestroy() {
+        try { unregisterReceiver(wake) } catch (_: Exception) {}
         if (instance === this) instance = null
         PushToTalk.indicator = null; edgeMic.hide(); h.removeCallbacksAndMessages(null); injector.shutdown()
         super.onDestroy()

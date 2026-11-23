@@ -26,6 +26,10 @@
     <uses-permission android:name="android.permission.STATUS_BAR_SERVICE"/>
     <!-- כיבוי / הפעלה של מסך המגע. ניתנת בזכות חתימת המערכת; רשומה גם ב-privapp-permissions-ezrim.xml ליתר ביטחון -->
     <uses-permission android:name="android.permission.DISABLE_INPUT_DEVICE"/>
+    <!-- "היי עזר" באנדרואיד 14: הדלקת המסך כשהחלונית נפתחת, ופטור משירות מיקרופון שעולה מהרקע (אחרי הפעלה מחדש).
+         ניתנות בזכות חתימת המערכת; רשומות גם ב-privapp-permissions-ezrim.xml -->
+    <uses-permission android:name="android.permission.TURN_SCREEN_ON"/>
+    <uses-permission android:name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"/>
     <!-- עזר: חיוג לאיש קשר, חזרה לשיחה האחרונה, שיחות אחרונות ומספר של איש קשר (הרשאות רגילות שהמשתמש מאשר) -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>

@@ -83,6 +83,9 @@ object Hotword {
     fun release() { if (holds > 0) holds--; if (holds == 0) service?.resumeSoon() }
     val held get() = holds > 0
 
+    // אם השירות לא רץ למרות שההגדרה דלוקה (אנדרואיד דחה אותו ברקע) — מנסים שוב (נקרא כשהמסך נדלק / הנעילה נפתחת)
+    fun retry(c: Context) { if (service == null && enabled(c)) sync(c) }
+
     fun hasMic(c: Context) = c.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     // מפעיל / עוצר את השירות לפי ההגדרה (נקרא מההגדרות, מפתיחת עזרים ומאתחול).
@@ -97,17 +100,21 @@ object Hotword {
 }
 
 // "הצגה מעל אפליקציות אחרות" — בלעדיה אנדרואיד חוסם את פתיחת החלונית מהרקע.
-// ההרשאה ניתנת בזכות חתימת המערכת; כאן מוודאים שגם ה-appop שלה מאושר (MANAGE_APP_OPS_MODES שכבר יש לעזרים)
+// "הדלקת המסך" (אנדרואיד 14) — בלעדיה "היי עזר" במסך כבוי פותח את החלונית אבל המסך לא נדלק.
+// ההרשאות ניתנות בזכות חתימת המערכת; כאן מוודאים שגם ה-appop שלהן מאושר (MANAGE_APP_OPS_MODES שכבר יש לעזרים)
 fun allowOverlay(c: Context) {
-    if (android.provider.Settings.canDrawOverlays(c)) return
-    try {
-        val ops = c.getSystemService(android.app.AppOpsManager::class.java)
-        ops.javaClass.getMethod("setMode", String::class.java, Int::class.javaPrimitiveType, String::class.java, Int::class.javaPrimitiveType)
-            .invoke(ops, android.app.AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, android.os.Process.myUid(), c.packageName, android.app.AppOpsManager.MODE_ALLOWED)
-    } catch (_: Throwable) {}
+    val ops = c.getSystemService(android.app.AppOpsManager::class.java) ?: return
+    val set = try { ops.javaClass.getMethod("setMode", String::class.java, Int::class.javaPrimitiveType, String::class.java, Int::class.javaPrimitiveType) } catch (_: Throwable) { return }
+    fun allow(op: String) = try { set.invoke(ops, op, android.os.Process.myUid(), c.packageName, android.app.AppOpsManager.MODE_ALLOWED) } catch (_: Throwable) {}
+    if (!android.provider.Settings.canDrawOverlays(c)) allow(android.app.AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW)
+    if (android.os.Build.VERSION.SDK_INT >= 34) {
+        val now = try { ops.unsafeCheckOpNoThrow("android:turn_screen_on", android.os.Process.myUid(), c.packageName) } catch (_: Throwable) { -1 }
+        if (now != android.app.AppOpsManager.MODE_ALLOWED) allow("android:turn_screen_on")
+    }
 }
 
 class HotwordService : Service() {
+    private var failed = false
     private val h = Handler(Looper.getMainLooper())
     private lateinit var engine: SpeechEngine
     private var mine = false
@@ -159,7 +166,15 @@ class HotwordService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("hotword", "היי עזר", NotificationManager.IMPORTANCE_MIN))
         val n = Notification.Builder(this, "hotword").setSmallIcon(R.drawable.ic_mic).setContentTitle("עזר מקשיב ל״היי עזר״").setOngoing(true).build()
-        if (android.os.Build.VERSION.SDK_INT >= 30) startForeground(77, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE) else startForeground(77, n)
+        // אנדרואיד 14: שירות מיקרופון שעולה מהרקע (אחרי הפעלה מחדש) נדחה אם אין פטור.
+        // הפטור: START_ACTIVITIES_FROM_BACKGROUND. ואם בכל זאת נדחה — לא קורסים: נסגרים, ושירות המקשים
+        // מנסה שוב כשהמסך נדלק / הנעילה נפתחת
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) startForeground(77, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE) else startForeground(77, n)
+        } catch (e: Exception) {
+            android.util.Log.w("Ezrim", "hotword: startForeground refused", e)
+            failed = true; stopSelf(); return
+        }
         registerReceiver(power, IntentFilter().apply { addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED)
             addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_USER_PRESENT) })
         charging = isCharging()
@@ -168,9 +183,10 @@ class HotwordService : Service() {
         resumeSoon()
     }
 
-    override fun onStartCommand(i: Intent?, f: Int, id: Int) = START_STICKY
+    override fun onStartCommand(i: Intent?, f: Int, id: Int) = if (failed) START_NOT_STICKY else START_STICKY
 
     override fun onDestroy() {
+        if (failed) { super.onDestroy(); return }
         Hotword.service = null
         h.removeCallbacksAndMessages(null)
         if (mine) engine.cancel()
