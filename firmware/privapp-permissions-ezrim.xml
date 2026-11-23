@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- עזרים R77: הרשאות המערכת של com.android.adds. נמצא ב-/system/etc/permissions/.
+     במכשיר הזה ro.control_privapp_permissions=enforce: הרשאה privileged שהאפליקציה מבקשת וחסרה כאן = המכשיר לא עולה.
+     לכן תמיד מעדכנים את הקובץ הזה קודם, ורק אחר כך מכניסים APK עם הרשאה חדשה. -->
+<permissions>
+    <privapp-permissions package="com.android.adds">
+        <permission name="android.permission.WRITE_SECURE_SETTINGS"/>
+        <permission name="android.permission.CHANGE_COMPONENT_ENABLED_STATE"/>
+        <permission name="android.permission.MOUNT_UNMOUNT_FILESYSTEMS"/>
+        <permission name="android.permission.MANAGE_APP_OPS_MODES"/>
+        <permission name="android.permission.INJECT_EVENTS"/>
+    </privapp-permissions>
+</permissions>

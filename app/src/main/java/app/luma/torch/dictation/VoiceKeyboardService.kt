@@ -1,0 +1,511 @@
+package app.luma.torch.dictation
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
+import android.inputmethodservice.InputMethodService
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.LinearLayout
+import android.widget.TextView
+
+// מקלדת קולית: סרגל קטן בסגנון ההקלדה הקולית של גוגל. מיקרופון, מחיקה, סטטוס, חזרה למקלדת הרגילה ואות השפה.
+// הטקסט נכנס לשדה דרך החיבור הרגיל של המקלדת (InputConnection), בלי שירות נגישות ובלי שירות חזית.
+class VoiceKeyboardService : InputMethodService(), SpeechEngine.Observer, PushToTalk.Keyboard {
+    private enum class Kind { MIC, BACKSPACE, KEYBOARD, SETTINGS }
+
+    private lateinit var engine: SpeechEngine
+    private val main = Handler(Looper.getMainLooper())
+    private var root: LinearLayout? = null
+    private var pill: LinearLayout? = null
+    private var statusView: TextView? = null
+    private var micIcon: Icon? = null
+    private var delIcon: Icon? = null
+    private var kbIcon: Icon? = null
+    private var cogIcon: Icon? = null
+    private var gripView: View? = null
+    private var gripRow: View? = null
+    private var spacer: View? = null
+    private var password = false
+    private var note: String? = null
+    private var prefix = ""          // רווח לפני המילים החדשות, אם התו שלפני הסמן אינו רווח
+    private var eatable = 0          // רווחים שלפני הסמן, שסימן פיסוק בתחילת ההכתבה צריך להסיר
+    private var eaten = false        // כבר הוסרו בהכתבה הנוכחית
+    private var freshSegment = false // אחרי מחיקה בזמן הקלטה: מחשבים את הרווח מחדש בטקסט הבא
+    private var composing = false    // יש כרגע טקסט בהרכבה שהמקלדת הזו כתבה
+    private var lastComposed = ""    // הטקסט האחרון שהמקלדת כתבה בהרכבה (לזיהוי עדכון ישן של הסמן)
+    private var composeStart = -1    // איפה מתחילה ההרכבה בשדה (מהעדכון התקין האחרון)
+    private var kbSession: SpeechEngine.Session? = null   // ההקלטה של המקלדת (המנוע משותף עם העוזר ו"היי עזר")
+    private var lastTextAt = 0L
+    // הקלטה בלי טקסט חדש 30 שניות — נעצרת (לא משאירים מיקרופון פתוח סתם)
+    private val idleStop = object : Runnable {
+        override fun run() {
+            if (!engine.owns(kbSession) || !engine.isListening) return
+            if (System.currentTimeMillis() - lastTextAt >= 30_000) engine.stop() else main.postDelayed(this, 5_000)
+        }
+    }
+    private var hotHeld = false
+    private var autoStart = false    // פתיחת המקלדת מתחילה להקשיב מיד; אם המודל עוד נטען, ממתינים לו
+
+    private val deleteRepeat = object : Runnable {
+        override fun run() {
+            if (!canDelete()) return
+            deleteOnce()
+            main.postDelayed(this, 60)
+        }
+    }
+
+    private fun dp(v: Float) = v * resources.displayMetrics.density
+    private fun systemNight() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    // מראה הסרגל לפי ההגדרה: 0 אוטומטי (לפי המערכת), 1 כהה, 2 בהיר
+    private fun dark() = when (DictationPrefs.prefs(this).getInt("bar_theme", 0)) { 1 -> true; 2 -> false; else -> systemNight() }
+    private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    // מחיקה עובדת גם תוך כדי הקלטה. רק בזמן סיום ההכתבה (המתנה לטקסט האחרון) היא חסומה
+    private fun canDelete() = !password && engine.state() != "finishing"
+
+    private fun deleteOnce() {
+        // רק אם יש טקסט בהרכבה: מילה שנאמרה ועוד לא הופיעה לא הולכת לאיבוד, ובהחזקת המחיקה מאפסים פעם אחת בלבד
+        if (engine.owns(kbSession) && engine.isListening && composing) {
+            // מקבעים את מה שהוכתב עד עכשיו, כדי שהמחיקה תפעל על טקסט אמיתי ולא על טקסט בהרכבה,
+            // ומאפסים את התמלול כדי שההשערה הבאה לא תחזיר את מה שנמחק
+            composing = false
+            currentInputConnection?.finishComposingText()
+            engine.resetTranscript()
+            freshSegment = true
+        }
+        sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        engine = SpeechEngine.get(this)
+        // המודל נטען פעם אחת כשהמקלדת עולה, ונשאר טעון כל עוד התהליך חי (נטען שוב רק אחרי הפעלה מחדש)
+        if (ModelLocator.isInstalled() && hasMic()) engine.warm()
+    }
+
+    override fun onEvaluateFullscreenMode() = false
+
+    // אזור הלחיצה הוא רק הסרגל עצמו. סרגל שהוזז למעלה "צף" מעל האפליקציה (לא דוחף את התוכן);
+    // בהכתבה מכפתור המצלמה המקלדת כמעט בלתי נראית — הסימון "מקשיב" מוצג ליד הכפתור
+    override fun onComputeInsets(outInsets: Insets) {
+        super.onComputeInsets(outInsets)
+        val r = root ?: return
+        val p = pill ?: return
+        val full = window?.window?.decorView?.height ?: return
+        if (r.height == 0) return
+        val floating = PushToTalk.active || barOffset() > 0
+        val top = if (floating) full else full - r.height + p.top
+        outInsets.contentTopInsets = top
+        outInsets.visibleTopInsets = top
+        outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_REGION
+        if (PushToTalk.active) outInsets.touchableRegion.setEmpty()
+        else {
+            val loc = IntArray(2); p.getLocationInWindow(loc)
+            outInsets.touchableRegion.set(loc[0], loc[1] - dp(14f).toInt(), loc[0] + p.width, loc[1] + p.height)
+        }
+    }
+
+    // הזזת הסרגל: המרחק מתחתית המסך (נשמר בהגדרות)
+    private fun barOffset() = DictationPrefs.prefs(this).getInt("bar_offset", 0)
+
+    override fun onCreateInputView(): View {
+        val side = dp(10f).toInt()
+        // הסרגל: גלולה צפה ועגולה עם צל רך — מיקרופון · מקלדת · סטטוס + גל קול · מחיקה · הגדרות
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            setPadding(side, dp(14f).toInt(), side, dp(10f).toInt())
+            clipToPadding = false; clipChildren = false
+        }
+        val p = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            setPadding(dp(6f).toInt(), 0, dp(6f).toInt(), 0)
+            elevation = dp(4f)
+        }
+        val box = dp(44f).toInt()
+
+        val mic = Icon(Kind.MIC).apply { setOnClickListener { onMic() } }
+        val del = Icon(Kind.BACKSPACE).apply {
+            setOnTouchListener { v, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        v.isPressed = true
+                        if (canDelete()) { deleteOnce(); main.postDelayed(deleteRepeat, 400) }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.isPressed = false; main.removeCallbacks(deleteRepeat)
+                    }
+                }
+                true
+            }
+        }
+        // גופן רגיל של המערכת (כמו בהדגמה), בלי גל קול ליד הסטטוס
+        val st = TextView(this).apply {
+            textSize = 16f; gravity = Gravity.CENTER; maxLines = 1; textDirection = View.TEXT_DIRECTION_RTL
+            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
+        }
+        val kb = Icon(Kind.KEYBOARD).apply { setOnClickListener { backToKeyboard() } }
+        val cog = Icon(Kind.SETTINGS).apply { setOnClickListener { openSetup() } } // הגדרות ההקלדה הקולית בעזרים
+
+        p.addView(mic, LinearLayout.LayoutParams(box, box))
+        p.addView(kb, LinearLayout.LayoutParams(box, box))
+        p.addView(st, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        p.addView(del, LinearLayout.LayoutParams(box, box))
+        p.addView(cog, LinearLayout.LayoutParams(box, box))
+
+        // פס קטן בראש הסרגל לגרירה למעלה/למטה
+        val grip = View(this)
+        val gripBox = android.widget.FrameLayout(this).apply {
+            addView(grip, android.widget.FrameLayout.LayoutParams(dp(28f).toInt(), dp(3f).toInt(), Gravity.CENTER))
+            setOnTouchListener(object : View.OnTouchListener {
+                var y0 = 0f; var o0 = 0
+                override fun onTouch(v: View, e: MotionEvent): Boolean {
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> { y0 = e.rawY; o0 = barOffset() }
+                        MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+                            val max = (resources.displayMetrics.heightPixels * 0.55f).toInt()
+                            val o = (o0 + (y0 - e.rawY)).toInt().coerceIn(0, max)
+                            spacer?.layoutParams = spacer?.layoutParams?.apply { height = o }
+                            spacer?.requestLayout()
+                            if (e.actionMasked == MotionEvent.ACTION_UP) DictationPrefs.prefs(this@VoiceKeyboardService).edit().putInt("bar_offset", if (o < dp(16f)) 0 else o).apply()
+                        }
+                    }
+                    return true
+                }
+            })
+        }
+        val sp = View(this)
+        r.addView(gripBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(14f).toInt()))
+        r.addView(p, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56f).toInt()))
+        r.addView(sp, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, barOffset()))
+
+        root = r; pill = p; statusView = st; micIcon = mic; delIcon = del; kbIcon = kb; cogIcon = cog
+        gripView = grip; gripRow = gripBox; spacer = sp
+        applyTheme(); render()
+        return r
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyTheme(); render()
+    }
+
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        password = isPassword(info)
+        note = null
+        applyTheme() // ייתכן שהמראה שונה בהגדרות
+        // אם כבר טעון זו קריאה ריקה. היא נחוצה רק אחרי כשל טעינה או אחרי שניתנה הרשאת מיקרופון
+        if (!password && ModelLocator.isInstalled() && hasMic()) engine.warm()
+        autoStart = !restarting && !password && ModelLocator.isInstalled() && hasMic()
+        PushToTalk.keyboard = this
+        if (!hotHeld) { hotHeld = true; app.luma.torch.assistant.Hotword.hold() } // המיקרופון למקלדת; "היי עזר" מושהה
+        if (PushToTalk.active) {
+            // נפתחה מכפתור המצלמה: מתחילים להקשיב גם אם זה restart; אם אי אפשר להכתיב כאן — חוזרים מיד
+            if (password || !ModelLocator.isInstalled() || !hasMic()) main.post { PushToTalk.done() }
+            else autoStart = true
+        }
+        engine.observe(this)
+        tryAutoStart()
+        render()
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+        autoStart = false
+        main.removeCallbacks(deleteRepeat)
+        engine.remove(this)
+        // מבטלים רק את ההקלטה של המקלדת (לא של העוזר), גם אם היא כבר בסיום — שהטקסט הסופי לא ייכתב שוב או לשדה אחר
+        engine.cancel(kbSession); kbSession = null; main.removeCallbacks(idleStop)
+        composing = false
+        currentInputConnection?.finishComposingText()
+        if (PushToTalk.keyboard === this) PushToTalk.keyboard = null
+        if (hotHeld) { hotHeld = false; app.luma.torch.assistant.Hotword.release() }
+        PushToTalk.done() // יצאו מהשדה באמצע הכתבה מכפתור המצלמה: מחזירים את המקלדת הקודמת
+        // בכוונה לא משחררים את המודל מהזיכרון כאן
+    }
+
+    // עריכה של המשתמש בזמן הקלטה שלא דרך כפתור המחיקה של המקלדת (מחיקה/ניקוי מתוך האפליקציה, הזזת הסמן):
+    // אם הטקסט שבהרכבה נעלם או שהסמן זז ממנו — מה שכבר הוכתב ננעל ומתחילים תמלול חדש,
+    // כדי שההשערה הבאה לא תחזיר את מה שנמחק
+    override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        if (!engine.owns(kbSession)) return
+        // הסמן זז לפני שהופיעה מילה: את הרווח שלפני המילה מחשבים מחדש במקום החדש
+        if (!composing) { freshSegment = true; return }
+        val gone = candidatesStart < 0
+        var moved = !gone && (newSelStart != newSelEnd || newSelEnd != candidatesEnd)
+        // עדכון ישן (מלפני הכתיבה האחרונה שלנו): אם בשדה עדיין מופיע בדיוק מה שכתבנו והסמן בסופו — זו לא עריכה
+        // (בודקים גם את מקום הסמן בפועל — שהקשה במקום אחר עם אותו טקסט לפניו, כמו תחילת שורה, תיחשב הזזה)
+        if (moved) {
+            val ic = currentInputConnection
+            val before = ic?.getTextBeforeCursor(lastComposed.length, 0)?.toString()
+            val cur = try { ic?.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)?.let { it.startOffset + it.selectionEnd } } catch (_: Exception) { null }
+            val atOurEnd = composeStart < 0 || cur == null || cur == composeStart + lastComposed.length
+            if (lastComposed.isNotEmpty() && before == lastComposed && ic.getSelectedText(0).isNullOrEmpty() && atOurEnd) moved = false
+        }
+        if (!gone && !moved) composeStart = candidatesStart
+        if (gone || moved) {
+            composing = false; composeStart = -1
+            currentInputConnection?.finishComposingText()
+            engine.resetTranscript()
+            freshSegment = true
+        }
+    }
+
+    override fun onDestroy() {
+        main.removeCallbacksAndMessages(null)
+        engine.remove(this)
+        super.onDestroy()
+    }
+
+    override fun onState(state: String) { tryAutoStart(); render() }
+
+    // מתחילים להקשיב ברגע שהמקלדת נפתחת והמודל מוכן (פעם אחת לכל פתיחה)
+    private fun tryAutoStart() {
+        if (!autoStart) return
+        // כבר מקשיבים (ההקלטה של המקלדת): ההפעלה האוטומטית בוצעה — לא לפתוח שוב את המיקרופון אחרי הסיום
+        if (engine.owns(kbSession)) { autoStart = false; return }
+        if (engine.state() != "ready" || engine.isListening) return
+        autoStart = false
+        startListening()
+    }
+
+    // ---------- פעולות ----------
+    private fun onMic() {
+        if (password) return
+        if (!ModelLocator.isInstalled()) { note = "המודל חסר"; render(); return }
+        if (!hasMic()) { openSetup(); return }
+        note = null
+        when {
+            engine.owns(kbSession) && engine.isListening -> engine.stop()
+            engine.isListening -> {}   // העוזר / "היי עזר" מקשיב — לא עוצרים אותו מהמקלדת
+            engine.state() == "ready" -> startListening()
+            else -> { engine.warm(); render() } // טוען או שגיאה: ניסיון חוזר
+        }
+    }
+
+    private fun startListening() {
+        val ic = currentInputConnection ?: return
+        // אם התו שלפני הסמן אינו רווח, מוסיפים רווח לפני המילים החדשות
+        readBefore(ic)
+        freshSegment = false
+        val session = object : SpeechEngine.Session {
+            override fun onText(text: String) {
+                lastTextAt = System.currentTimeMillis()
+                val p = DictationPrefs.prefs(this@VoiceKeyboardService)
+                val body = Punctuation.process(text, p.getBoolean("auto_punct", true), p.getBoolean("voice_commands", true))
+                val ic = currentInputConnection ?: return
+                if (freshSegment && body.isNotEmpty()) {
+                    readBefore(ic)
+                    freshSegment = false
+                }
+                // "פסיק", "נקודה" וכו' נצמדים למילה שלפניהם: אם לפני הסמן יש רווח (למשל רווח אוטומטי
+                // שהמקלדת הרגילה הוסיפה אחרי מילה), מוחקים אותו כדי שלא יהיה רווח לפני הסימן
+                val attach = body.isNotEmpty() && Punctuation.attachesLeft(body)
+                // המחיקה והכתיבה כפעולה אחת: אחרת מגיע עדכון ביניים (בלי הרכבה) שנראה כמו מחיקה של המשתמש
+                ic.beginBatchEdit()
+                if (attach && eatable > 0 && !eaten) { ic.deleteSurroundingText(eatable, 0); eaten = true }
+                val pre = when {
+                    body.isEmpty() || attach -> ""
+                    eaten -> " " // ההשערה השתנתה ממילת פיסוק למילה רגילה: מחזירים את הרווח שנמחק
+                    else -> prefix
+                }
+                val out = if (body.isEmpty()) "" else pre + body
+                ic.setComposingText(out, 1)
+                ic.endBatchEdit()
+                lastComposed = out
+                composing = body.isNotEmpty()
+            }
+            override fun onFinished() { kbSession = null; composing = false; currentInputConnection?.finishComposingText(); render(); main.post { PushToTalk.done(); render() } }
+            override fun onError(message: String) {
+                kbSession = null; composing = false
+                // "המיקרופון תפוס כרגע" / "הזיהוי נכשל, נסה שוב"
+                currentInputConnection?.finishComposingText(); note = message; render(); main.post { PushToTalk.done(); render() }
+            }
+        }
+        val ok = engine.start(session)
+        if (ok) { kbSession = session; lastTextAt = System.currentTimeMillis(); main.removeCallbacks(idleStop); main.postDelayed(idleStop, 5_000) }
+        if (!ok) { note = if (engine.isListening) null else "המודל עדיין נטען"; render() }
+    }
+
+    // ---------- הכתבה מכפתור המצלמה ----------
+    override fun pttStart() {
+        if (password) return
+        if (engine.isListening) { if (!engine.owns(kbSession)) { PushToTalk.done(); render() }; return }
+        if (engine.state() == "ready") startListening()
+        else { autoStart = true; if (ModelLocator.isInstalled() && hasMic()) engine.warm() }
+    }
+
+    override fun pttStop() {
+        when {
+            engine.owns(kbSession) && engine.isListening -> engine.stop()      // הטקסט האחרון נכנס, ואז onFinished → done()
+            engine.state() == "finishing" -> {}     // כבר בעצירה
+            else -> { autoStart = false; PushToTalk.done(); render() } // עוד לא התחיל להקשיב (למשל המודל נטען)
+        }
+    }
+
+    override fun pttListening() = engine.owns(kbSession) && (engine.isListening || engine.state() == "finishing")
+
+    // בודק מה יש לפני הסמן: אם התו האחרון אינו רווח, מילים חדשות יקבלו רווח לפניהן;
+    // אם יש שם רווחים (לא ירידת שורה), סימן פיסוק בתחילת ההכתבה יסיר אותם
+    private fun readBefore(ic: android.view.inputmethod.InputConnection) {
+        val before = ic.getTextBeforeCursor(4, 0)?.toString() ?: ""
+        prefix = if (before.isNotEmpty() && !before.last().isWhitespace()) " " else ""
+        val spaces = before.length - before.trimEnd(' ', '\u00A0').length
+        // מוחקים רק אם יש לפני הרווחים טקסט ממשי (לא בתחילת שדה או שורה)
+        eatable = if (spaces > 0 && spaces < before.length && before[before.length - spaces - 1] != '\n') spaces else 0
+        eaten = false
+    }
+
+    private fun backToKeyboard() {
+        if (!switchToPreviousInputMethod())
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+    }
+
+    private fun openSetup() {
+        startActivity(Intent(this, DictationActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    private fun isPassword(info: EditorInfo?): Boolean {
+        val t = info?.inputType ?: return false
+        val cls = t and InputType.TYPE_MASK_CLASS
+        val v = t and InputType.TYPE_MASK_VARIATION
+        return (cls == InputType.TYPE_CLASS_TEXT && (v == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                v == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD || v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)) ||
+                (cls == InputType.TYPE_CLASS_NUMBER && v == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+    }
+
+    // ---------- תצוגה ----------
+    private fun applyTheme() {
+        val n = dark()
+        val compact = PushToTalk.active
+        // הרקע של המקלדת שקוף: הסרגל צף
+        root?.background = null
+        try { window?.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0)) } catch (_: Exception) {}
+        pill?.background = GradientDrawable().apply {
+            cornerRadius = dp(28f); setColor(if (n) 0xFF2D2F33.toInt() else 0xFFFFFFFF.toInt())
+            setStroke(dp(1f).toInt(), if (n) 0xFF3C4043.toInt() else 0xFFE3E6EA.toInt())
+        }
+        gripView?.background = GradientDrawable().apply { cornerRadius = dp(2f); setColor(if (n) 0xFF5F6368.toInt() else 0xFFC4C7C5.toInt()) }
+        statusView?.setTextColor(if (n) 0xFFE8EAED.toInt() else 0xFF202124.toInt())
+        // הכתבה מכפתור המצלמה: הסרגל מוסתר לגמרי (הסימון מוצג ליד הכפתור)
+        val vis = if (compact) View.GONE else View.VISIBLE
+        pill?.visibility = vis; gripRow?.visibility = vis; spacer?.visibility = vis
+        root?.setPadding(if (compact) 0 else dp(10f).toInt(), if (compact) 0 else dp(14f).toInt() - dp(14f).toInt(), if (compact) 0 else dp(10f).toInt(), if (compact) 0 else dp(10f).toInt())
+        for (i in listOf(micIcon, delIcon, kbIcon, cogIcon)) i?.invalidate()
+    }
+
+    private fun render() {
+        val s = engine.state()
+        val text = when {
+            note != null -> note!!
+            password -> "לא זמין בשדה סיסמה"
+            !ModelLocator.isInstalled() -> "המודל חסר"
+            !hasMic() -> "אין הרשאת מיקרופון"
+            s == "listening" -> "מקשיב"
+            s == "finishing" -> "מסיים"
+            s == "error" -> "שגיאה בטעינת המודל"
+            s == "loading" -> "מתבצע אתחול..."
+            else -> "בהשהיה"
+        }
+        statusView?.text = text
+        val listening = s == "listening" && note == null && !password
+        applyTheme()
+        if (!listening) statusView?.setTextColor(if (dark()) 0xFF9AA0A6.toInt() else 0xFF80868B.toInt())
+        micIcon?.apply { alpha = if (password) 0.38f else 1f; contentDescription = if (engine.isListening) "סיום הכתבה" else "התחלת הכתבה"; invalidate() }
+        delIcon?.apply { alpha = if (canDelete()) 1f else 0.38f; contentDescription = "מחיקה"; invalidate() }
+        kbIcon?.apply { contentDescription = "חזרה למקלדת"; invalidate() }
+        cogIcon?.apply { contentDescription = "הגדרות"; invalidate() }
+    }
+
+    // אייקון מצויר ידנית על רשת של 24 יחידות (מיקרופון, מחיקה, מקלדת), בתוך אזור לחיצה של 48dp
+    private inner class Icon(private val kind: Kind) : View(this@VoiceKeyboardService) {
+        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+        }
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+
+        override fun onDraw(canvas: Canvas) {
+            val s = dp(1f)
+            val ox = (width - 24 * s) / 2f
+            val oy = (height - 24 * s) / 2f
+            fun x(v: Float) = ox + v * s
+            fun y(v: Float) = oy + v * s
+            val n = dark()
+            var color = if (n) 0xFFE8EAED.toInt() else 0xFF202124.toInt()
+            if (kind != Kind.MIC) color = if (n) 0xFFBDC1C6.toInt() else 0xFF5F6368.toInt()
+            if (kind == Kind.MIC) {
+                val acc = if (n) 0xFF3DDCB4.toInt() else 0xFF0C9A82.toInt()
+                if (engine.isListening) {
+                    fill.color = acc; fill.alpha = 60
+                    canvas.drawCircle(width / 2f, height / 2f, 21.5f * s, fill)
+                    fill.alpha = 255
+                    canvas.drawCircle(width / 2f, height / 2f, 18 * s, fill)
+                    color = if (n) 0xFF0E1A1F.toInt() else 0xFFFFFFFF.toInt()
+                } else {
+                    fill.color = if (n) 0xFF1F3B36.toInt() else 0xFFE8F5F2.toInt()
+                    canvas.drawCircle(width / 2f, height / 2f, 18 * s, fill)
+                    color = acc
+                }
+            }
+            stroke.color = color; stroke.strokeWidth = 1.8f * s; fill.color = color
+            when (kind) {
+                Kind.MIC -> {
+                    canvas.drawRoundRect(x(9f), y(3f), x(15f), y(14f), 3 * s, 3 * s, fill)
+                    canvas.drawArc(RectF(x(6f), y(7f), x(18f), y(17f)), 0f, 180f, false, stroke)
+                    canvas.drawLine(x(12f), y(17f), x(12f), y(21f), stroke)
+                    canvas.drawLine(x(9f), y(21f), x(15f), y(21f), stroke)
+                }
+                Kind.BACKSPACE -> {
+                    val path = Path().apply {
+                        moveTo(x(9f), y(5f)); lineTo(x(21f), y(5f)); lineTo(x(21f), y(19f))
+                        lineTo(x(9f), y(19f)); lineTo(x(3f), y(12f)); close()
+                    }
+                    canvas.drawPath(path, stroke)
+                    canvas.drawLine(x(11.5f), y(9.5f), x(16.5f), y(14.5f), stroke)
+                    canvas.drawLine(x(16.5f), y(9.5f), x(11.5f), y(14.5f), stroke)
+                }
+                Kind.KEYBOARD -> {
+                    canvas.drawRoundRect(x(2.5f), y(6f), x(21.5f), y(18f), 2 * s, 2 * s, stroke)
+                    for (cx in floatArrayOf(6f, 9.5f, 13f, 16.5f)) {
+                        canvas.drawCircle(x(cx), y(9.5f), 0.9f * s, fill)
+                        canvas.drawCircle(x(cx), y(12.5f), 0.9f * s, fill)
+                    }
+                    canvas.drawLine(x(8f), y(15.3f), x(16f), y(15.3f), stroke)
+                }
+                Kind.SETTINGS -> {
+                    // גלגל שיניים: 8 שיניים סביב חור מרכזי
+                    val cx = x(12f); val cy = y(12f)
+                    fun pt(r: Float, deg: Double) = Pair(
+                        cx + (r * Math.cos(Math.toRadians(deg))).toFloat(), cy + (r * Math.sin(Math.toRadians(deg))).toFloat())
+                    val path = Path()
+                    for (i in 0 until 8) {
+                        val base = i * 45.0
+                        val a = pt(7.2f * s, base - 14.0); val b = pt(9.6f * s, base - 9.0)
+                        val c = pt(9.6f * s, base + 9.0); val d = pt(7.2f * s, base + 14.0)
+                        if (i == 0) path.moveTo(a.first, a.second) else path.lineTo(a.first, a.second)
+                        path.lineTo(b.first, b.second); path.lineTo(c.first, c.second); path.lineTo(d.first, d.second)
+                    }
+                    path.close()
+                    canvas.drawPath(path, stroke)
+                    canvas.drawCircle(cx, cy, 3f * s, stroke)
+                }
+            }
+        }
+    }
+}

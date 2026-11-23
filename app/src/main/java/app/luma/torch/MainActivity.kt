@@ -1,0 +1,122 @@
+package app.luma.torch
+
+import android.content.Intent
+import android.graphics.Typeface
+import android.os.Build
+import android.os.Bundle
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.method.LinkMovementMethod
+import android.text.style.URLSpan
+import android.view.Gravity
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.*
+import app.luma.torch.dictation.DictationActivity
+import app.luma.torch.dictation.ModelLocator
+
+class MainActivity : BaseActivity() {
+    private fun hero() = FrameLayout(this).apply {
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(20) }
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+            addView(TextView(this@MainActivity).apply {
+                text = "עזרים"; textSize = 34f; setTextColor(fg); typeface = Typeface.DEFAULT_BOLD
+            })
+            addView(TextView(this@MainActivity).apply { text = "הגדרות נוספות לנגן"; textSize = 14f; setTextColor(dim) })
+        }, FrameLayout.LayoutParams(-1, -2))
+        // גלגל שיניים להגדרות
+        addView(ImageView(this@MainActivity).apply {
+            setImageDrawable(icon(R.drawable.ic_settings, dim)); setPadding(dp(9), dp(9), dp(9), dp(9))
+            background = shape(card, 14, line)
+            setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
+        }, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.TOP or Gravity.END))
+    }
+
+    private fun footer(): TextView {
+        val email = "ezerphone0@gmail.com"
+        val phone = "043136429"
+        val t = "גרסה כשרה מאת $email\nלהכשרת נגנים תיקון בריקים צריבת רוט ועוד $phone"
+        val sp = SpannableString(t)
+        fun link(part: String, url: String) {
+            val i = t.indexOf(part)
+            if (i >= 0) sp.setSpan(URLSpan(url), i, i + part.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        link(email, "mailto:$email"); link(phone, "tel:$phone")
+        return TextView(this).apply {
+            text = sp; textSize = 12f; setTextColor(dim); gravity = Gravity.CENTER
+            setLineSpacing(0f, 1.3f); movementMethod = LinkMovementMethod.getInstance(); setLinkTextColor(acc)
+            setPadding(dp(24), dp(12), dp(24), dp(22))
+        }
+    }
+
+    override fun onCreate(b: Bundle?) {
+        super.onCreate(b)
+        RootShell.warmUp() // בקשת הרשאת root פעם אחת, בפתיחת האפליקציה
+        if (Torch.shake) startForegroundService(Intent(this, FlashService::class.java))
+        try { app.luma.torch.dictation.VoiceIme.ensureDefault(this) } catch (_: Exception) {}
+        try { app.luma.torch.assistant.Assistant.ensureDefault(this) } catch (_: Exception) {}
+        try { app.luma.torch.assistant.Hotword.sync(this) } catch (_: Exception) {}
+        val sysCard = big(R.drawable.ic_statusbar, "הגדרות מערכת", "כפתור סיבוב, עיצוב הסטטוס בר וקיצורים", SystemSettingsActivity::class.java)
+        val hideCard = big(R.drawable.ic_hide, "הסתרת אייקונים", "הסתרת אייקון של אפליקציה ממסך הבית", HideIconActivity::class.java)
+        val custCard = big(R.drawable.ic_tune, "התאמה אישית", custCaption(), CustomizationActivity::class.java)
+        pageWithFooter(
+            footer(),
+            hero(),
+            big(R.drawable.ic_flash, "פנס", "הדלקה, הבהוב, כיבוי אוטומטי וניעור", FlashActivity::class.java),
+            big(R.drawable.ic_shortcuts, "מקשים", "לחיצה ארוכה על המקשים 0–9 ועל מקש התפריט", KeysActivity::class.java),
+            big(R.drawable.ic_assist, "עזר", "העוזר הקולי: אפליקציות, תזכורות, זמני היום ועוד", app.luma.torch.assistant.ChatHistoryActivity::class.java,
+                "מודל זיהוי הדיבור לא נמצא בקושחה") { ModelLocator.isInstalled() },
+            big(R.drawable.ic_mic, "הקלדה קולית", "הכתבה בעברית בלי אינטרנט, בכל שדה טקסט", DictationActivity::class.java,
+                "מודל זיהוי הדיבור לא נמצא בקושחה") { ModelLocator.isInstalled() },
+            sysCard, hideCard, custCard
+        )
+        // התאמה אישית דורשת root; הסתרת אייקונים דורשת הרשאת מערכת (priv-app),
+        // ונבדקת ישירות ללא צורך ב-root. בהגדרות מערכת כל פריט מנוטרל בנפרד אם חסרה לו הרשאה
+        rootCards = listOf(custCard)
+        this.custCard = custCard
+        checkRoot(rootCards)
+        checkPerm(hideCard, "android.permission.CHANGE_COMPONENT_ENABLED_STATE")
+    }
+
+    private var rootCards: List<View> = emptyList()
+    private var custCard: View? = null
+    private fun custCaption() = if (CustomizationActivity.setupDone()) "ההגדרה החד-פעמית בוצעה" else "הודעות, מציג HTML, שירותי גוגל והתקנות — הגדרה חד-פעמית"
+    private val NEEDS_ROOT = " · דורש root"
+
+    // חוזרים למסך הראשי (מתוך מסך אחר באפליקציה או מבחוץ): אם הבדיקה בכניסה נכשלה — בודקים שוב
+    override fun onRestart() {
+        super.onRestart()
+        // חזרה מההתאמה האישית (גם בלי הפעלה מחדש): הכיתוב של הכרטיס לפי המצב העדכני
+        ((custCard as? ViewGroup)?.getChildAt(1) as? ViewGroup)?.getChildAt(1)?.let { t -> (t as? TextView)?.let { tv ->
+            tv.text = custCaption() + if (tv.text.endsWith(NEEDS_ROOT)) NEEDS_ROOT else ""
+        } }
+        if (RootShell.failed) { RootShell.warmUp(); checkRoot(rootCards) }
+    }
+
+    // מאפיר ומנטרל כרטיסים שדורשים root, כשאין במכשיר הרשאת root
+    private fun checkRoot(rootCards: List<View>) {
+        Thread {
+            val ok = RootShell.hasRoot() // התוצאה של הבדיקה בכניסה
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                rootCards.forEach {
+                    it.alpha = if (ok) 1f else 0.4f; it.isEnabled = ok
+                    // "דורש root" מופיע רק כשאין root
+                    ((it as? ViewGroup)?.getChildAt(1) as? ViewGroup)?.getChildAt(1)?.let { t -> (t as? TextView)?.let { tv ->
+                        val base = tv.text.toString().removeSuffix(NEEDS_ROOT)
+                        tv.text = if (ok) base else base + NEEDS_ROOT
+                    } }
+                }
+            }
+        }.start()
+    }
+
+    // מאפיר ומנטרל כרטיס שדורש הרשאת מערכת privileged, אם היא לא הוענקה לעזרים
+    private fun checkPerm(card: View, permission: String) {
+        val ok = checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        card.alpha = if (ok) 1f else 0.4f; card.isEnabled = ok
+    }
+}

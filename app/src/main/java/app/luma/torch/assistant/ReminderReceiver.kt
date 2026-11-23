@@ -1,0 +1,41 @@
+package app.luma.torch.assistant
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
+import app.luma.torch.R
+
+// תזכורת שהגיע זמנה: התראה עם צליל. טיימר שינה: עצירת המוזיקה.
+class ReminderReceiver : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent) {
+        val id = i.getIntExtra("id", 0)
+        Assistant.done(c, id)
+        if (i.getBooleanExtra("pause", false)) { Assistant.pauseMedia(c); return }
+        show(c, id, i.getStringExtra("text") ?: "תזכורת")
+    }
+
+    companion object {
+        const val CH = "assistant_reminders"
+        fun show(c: Context, id: Int, text: String) {
+        val nm = c.getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannel(CH) == null) {
+            nm.createNotificationChannel(NotificationChannel(CH, "תזכורות של עזר", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                enableVibration(true)
+            })
+        }
+        // לחיצה על ההתראה פותחת את עזר (וההתראה נעלמת)
+        val open = android.app.PendingIntent.getActivity(c, id, Intent(c, ChatHistoryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+        nm.notify(id, Notification.Builder(c, CH).setSmallIcon(R.drawable.ic_mic).setContentTitle(Assistant.NAME).setContentText(text)
+            .setCategory(Notification.CATEGORY_REMINDER).setContentIntent(open).setAutoCancel(true)
+            .setStyle(Notification.BigTextStyle().bigText(text)).build())
+        }
+    }
+}
