@@ -56,8 +56,14 @@ class SystemSettingsActivity : BaseActivity() {
         style(addEject, false)
         val tiles = small(row(listOf(addEject)))
 
+        // מסך מגע: כיבוי / הפעלה (המקשים ממשיכים לעבוד; כשהמגע כבוי מגיעים לכפתור בחצים)
+        touchBtn = tv("") { toggleTouch() }
+        touchNote = TextView(this).apply { textSize = 12f; setLineSpacing(0f, 1.15f); setPadding(dp(2), dp(8), 0, 0) }
+        paintTouch()
+
         page(
             header("הגדרות מערכת").apply { (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(10) },
+            box("הגדרות מסך מגע", touchBtn, touchNote),
             box("סיבוב מסך", rotSw, rotStatus),
             box("עיצוב הסטטוס בר", design),
             box("תאריך במסך הנעילה", date),
@@ -66,6 +72,34 @@ class SystemSettingsActivity : BaseActivity() {
         // פחות ריווח עליון/תחתון מהרגיל
         try { ((findViewById<android.view.ViewGroup>(android.R.id.content).getChildAt(0) as ScrollView).getChildAt(0)).setPadding(dp(20), dp(30), dp(20), dp(12)) } catch (_: Exception) {}
         loadRotation()
+    }
+
+    private lateinit var touchBtn: TextView
+    private lateinit var touchNote: TextView
+
+    private fun paintTouch() {
+        val off = Touch.isOff(this)
+        touchBtn.text = if (off) "הפעלת מגע" else "כיבוי מגע"
+        style(touchBtn, !off)
+        touchBtn.isFocusable = true
+        touchNote.setTextColor(dim)
+        touchNote.text = "כיבוי או הפעלת מסך המגע במכשיר"
+        if (!Touch.available()) { touchBtn.isEnabled = false; touchBtn.alpha = 0.4f; touchNote.text = "לא נמצא מסך מגע במכשיר" }
+    }
+
+    // קוד הגיבוי בחייגן (Touch.CODE) לא מוצג במסך בכוונה
+    private fun toggleTouch() {
+        if (Touch.isOff(this)) {
+            if (!Touch.set(this, false)) Toast.makeText(this, "לא ניתן להפעיל את המגע", Toast.LENGTH_SHORT).show()
+            paintTouch(); return
+        }
+        dlg().setTitle("לכבות את המגע?")
+            .setMessage("המקשים ימשיכו לעבוד. המגע יישאר כבוי גם אחרי הפעלה מחדש.")
+            .setPositiveButton("כיבוי") { _, _ ->
+                if (!Touch.set(this, true)) Toast.makeText(this, "לא ניתן לכבות את המגע", Toast.LENGTH_SHORT).show()
+                paintTouch(); touchBtn.requestFocus()
+            }
+            .setNegativeButton("ביטול", null).show()
     }
 
     private fun setChecked(v: Boolean) { painting = true; rotSw.isChecked = v; painting = false }
