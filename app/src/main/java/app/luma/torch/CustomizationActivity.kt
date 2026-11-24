@@ -6,12 +6,20 @@ import android.view.View
 import android.widget.*
 import java.io.File
 
-// התאמה אישית של R77: הגדרה חד-פעמית (בלתי הפיכה) — הודעות, מציג HTML, שירותי גוגל והתקנת אפליקציות.
+// התאמה אישית של R77: הגדרה חד-פעמית (בלתי הפיכה) — הודעות, מציג HTML, שירותי גוגל, מצלמה, חסימת אפליקציות וידאו והתקנת אפליקציות.
 // הסימון שההגדרה בוצעה נשמר במחיצת המערכת, כך שהוא שורד איפוס.
 class CustomizationActivity : BaseActivity() {
     companion object {
         const val MMS_DIR = "/system/app/MtkMms_r70"
         const val HTML_DIR = "/system/app/HTMLViewer"
+        const val CAMERA_DIR = "/system_ext/app/Camera"
+        const val GALLERY_DIR = "/system_ext/priv-app/MtkGallery2"
+        const val FILES_DIR = "/product/priv-app/FilesGoogle"
+        // חסימת אפליקציות וידאו: הגרסאות הכשרות יושבות בקושחה, ועוברות למקומן בזמן ההגדרה (ואז התיקייה נמחקת)
+        const val APPS_SRC = "/system/etc/ezrim/apps"
+        const val SMART_GALLERY_SRC = "$APPS_SRC/SmartGallery.apk"
+        const val FILES_SRC = "$APPS_SRC/FilesGoogle.apk"
+        const val SMART_GALLERY_DIR = "/system/app/SmartGallery"
         // שירותי גוגל: החבילות והתיקיות שלהן (כל הרכיבים שעובדים רק יחד עם שירותי Google Play)
         val GOOGLE_PKGS = listOf(
             "com.google.android.gms", "com.google.android.gsf", "com.android.vending", "com.hideps",
@@ -37,8 +45,12 @@ class CustomizationActivity : BaseActivity() {
     private var mmsNow = false
     private var htmlNow = false
     private var googleNow = false
+    private var camNow = false
+    private var videoNow = false   // יש מה להחליף (גלריה או Files) והקבצים הכשרים נמצאים בקושחה
+    private var videoSrc = false
     // הבחירות במסך (0 להשאיר, 1 למחוק, -1 לא קיים)
     private var mms = 0; private var html = 0; private var google = 0
+    private var cam = 0; private var video = 0
     private var install = 0; private var needPw = false
     private var pwField: EditText? = null
 
@@ -50,6 +62,9 @@ class CustomizationActivity : BaseActivity() {
             if (!done) {
                 mmsNow = File(MMS_DIR).exists(); htmlNow = File(HTML_DIR).exists()
                 googleNow = GOOGLE_DIRS.any { File(it).exists() }
+                camNow = File(CAMERA_DIR).exists()
+                videoSrc = File(SMART_GALLERY_SRC).exists() && File(FILES_SRC).exists()
+                videoNow = videoSrc && (File(GALLERY_DIR).exists() || File(FILES_DIR).exists())
             }
             runOnUiThread { if (!isFinishing) { if (done) buildDone() else buildSetup() } }
         }.start()
@@ -113,13 +128,19 @@ class CustomizationActivity : BaseActivity() {
 
     private fun buildSetup() {
         mms = if (mmsNow) 0 else -1; html = if (htmlNow) 0 else -1; google = if (googleNow) 0 else -1
+        cam = if (camNow) 0 else -1; video = if (videoNow) 0 else -1
         val mmsSec = keepOrDelete("הודעות", mmsNow, { mms }, { mms = it })
         val htmlSec = keepOrDelete("מציג HTML", htmlNow, { html }, { html = it })
         val googleSec = keepOrDelete("שירותי גוגל", googleNow, { google }, { google = it },
             "חנות Play, שירותי Google Play והרכיבים שתלויים בהם")
+        val camSec = keepOrDelete("מצלמה", camNow, { cam }, { cam = it })
+        val videoSec = section("חסימת אפליקציות וידאו", choice(listOf("לא", "כן"), listOf(videoNow, videoNow), { video }, { video = it })).apply {
+            addView(note(if (videoNow) "מחליף את הגלריה בגלריה כשרה, ואת Files של גוגל בגרסה בלי וידאו"
+                else if (!videoSrc) "הקבצים של האפליקציות הכשרות לא נמצאו בקושחה" else "לא קיים במכשיר"))
+        }
         val ok = tv("אישור (בלתי הפיך)", 16f) { confirmSetup() }.apply { style(this, true) }
         ok.layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(22) }
-        page(header("התאמה אישית", null, "הגדרה חד-פעמית"), mmsSec, htmlSec, googleSec, installPart(), ok)
+        page(header("התאמה אישית", null, "הגדרה חד-פעמית"), mmsSec, htmlSec, googleSec, camSec, videoSec, installPart(), ok)
     }
 
     private fun buildDone() {
@@ -136,6 +157,8 @@ class CustomizationActivity : BaseActivity() {
             "הודעות: " + if (!mmsNow) "לא קיים" else if (mms == 1) "יימחק" else "נשאר",
             "מציג HTML: " + if (!htmlNow) "לא קיים" else if (html == 1) "יימחק" else "נשאר",
             "שירותי גוגל: " + if (!googleNow) "לא קיימים" else if (google == 1) "יימחקו" else "נשארים",
+            "מצלמה: " + if (!camNow) "לא קיימת" else if (cam == 1) "תימחק" else "נשארת",
+            "חסימת אפליקציות וידאו: " + if (!videoNow) "לא זמין" else if (video == 1) "כן" else "לא",
             "התקנת אפליקציות: " + installText())
         dlg().setTitle("לבצע את השינויים?")
             .setMessage("שים לב: הפעולה בלתי הפיכה.\n\n" + lines.joinToString("\n") +
@@ -144,7 +167,8 @@ class CustomizationActivity : BaseActivity() {
             .setNegativeButton("ביטול", null).show()
     }
 
-    private fun deletes() = (mmsNow && mms == 1) || (htmlNow && html == 1) || (googleNow && google == 1)
+    private fun deletes() = (mmsNow && mms == 1) || (htmlNow && html == 1) || (googleNow && google == 1) ||
+        (camNow && cam == 1) || (videoNow && video == 1)
 
     private fun progress(): AlertDialog = dlg().setTitle("מבצע…")
         .setMessage("אל תכבה את המכשיר. הוא יופעל מחדש בסיום.").setCancelable(false).show()
@@ -200,6 +224,23 @@ class CustomizationActivity : BaseActivity() {
             try {
                 if (mmsNow && mms == 1) { cmd.append("rm -rf $MMS_DIR; [ -d $MMS_DIR ] || echo M_OK; "); steps += "M_OK" to "הודעות" }
                 if (htmlNow && html == 1) { cmd.append("rm -rf $HTML_DIR; [ -d $HTML_DIR ] || echo H_OK; "); steps += "H_OK" to "מציג HTML" }
+                if (camNow && cam == 1) { cmd.append("rm -rf $CAMERA_DIR; [ -d $CAMERA_DIR ] || echo C_OK; "); steps += "C_OK" to "מצלמה" }
+                if (videoNow && video == 1) {
+                    // גלריה: מוחקים את של המכשיר ומעבירים את הכשרה ל-/system/app (לא priv-app — בלי סיכון להרשאות מערכת; אותה מחיצה — העברה מיידית)
+                    val sg = "$SMART_GALLERY_DIR/SmartGallery.apk"
+                    cmd.append("pm uninstall-system-updates com.android.gallery3d >/dev/null 2>&1; rm -rf $GALLERY_DIR; " +
+                        "mkdir -p $SMART_GALLERY_DIR && mv -f $SMART_GALLERY_SRC $sg && chown -R root:root $SMART_GALLERY_DIR && " +
+                        "chmod 755 $SMART_GALLERY_DIR && chmod 644 $sg && chcon -R u:object_r:system_file:s0 $SMART_GALLERY_DIR 2>/dev/null; " +
+                        "[ ! -d $GALLERY_DIR ] && [ -s $sg ] && echo VG_OK; ")
+                    steps += "VG_OK" to "גלריה כשרה"
+                    // Files: אותה חבילה ואותה חתימה — מחליפים את הקובץ (קודם מסירים עדכונים שהותקנו מעליו)
+                    val fa = "$FILES_DIR/FilesGoogle.apk"
+                    cmd.append("pm uninstall-system-updates com.google.android.apps.nbu.files >/dev/null 2>&1; " +
+                        "mkdir -p $FILES_DIR && rm -rf $FILES_DIR/oat && cp -f $FILES_SRC $fa && chown -R root:root $FILES_DIR && " +
+                        "chmod 755 $FILES_DIR && chmod 644 $fa && chcon -R u:object_r:system_file:s0 $FILES_DIR 2>/dev/null; " +
+                        "rm -f /data/dalvik-cache/arm64/*FilesGoogle* 2>/dev/null; cmp -s $FILES_SRC $fa && echo VF_OK; ")
+                    steps += "VF_OK" to "Files בלי וידאו"
+                }
                 if (googleNow && google == 1) {
                     // קודם מסירים עדכונים שהותקנו מעל גרסת המערכת (אחרת הם נשארים כאפליקציה רגילה), ואז את התיקיות
                     val dirs = GOOGLE_DIRS.joinToString(" ")
@@ -226,6 +267,7 @@ class CustomizationActivity : BaseActivity() {
             val marked = failed.isEmpty() && try { runSystem(REMOUNT +
                 "{ mkdir -p /system/etc/ezrim && touch /system/etc/ezrim/setup_done; } 2>/dev/null || touch /system_ext/etc/ezrim_setup_done; " +
                 "[ -e /system/etc/ezrim/setup_done ] || [ -e /system_ext/etc/ezrim_setup_done ] && echo D_OK; " +
+                "rm -rf $APPS_SRC; " +   // ההגדרה חד-פעמית: הקבצים הכשרים כבר במקומם (או שלא נבחרו) — מפנים מקום
                 "mount -o ro,remount /system 2>/dev/null || true").contains("D_OK") } catch (_: Blocked) { false }
             runOnUiThread {
                 // לא נמחקה אפליקציה (רק הגדרת ההתקנות, שנקראת בכל התקנה) — בלי הפעלה מחדש

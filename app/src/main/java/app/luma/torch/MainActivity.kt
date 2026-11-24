@@ -83,7 +83,7 @@ class MainActivity : BaseActivity() {
 
     private var rootCards: List<View> = emptyList()
     private var custCard: View? = null
-    private fun custCaption() = if (CustomizationActivity.setupDone()) "ההגדרה החד-פעמית בוצעה" else "הודעות, מציג HTML, שירותי גוגל והתקנות — הגדרה חד-פעמית"
+    private fun custCaption() = if (CustomizationActivity.setupDone()) "ההגדרה החד-פעמית בוצעה" else "הודעות, גוגל, מצלמה, גלריה ועוד — הגדרה חד-פעמית"
     private val NEEDS_ROOT = " · דורש root"
 
     // חוזרים למסך הראשי (מתוך מסך אחר באפליקציה או מבחוץ): אם הבדיקה בכניסה נכשלה — בודקים שוב
